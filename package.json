@@ -1,0 +1,137 @@
+// 핸들러
+export default {
+  async fetch(request, env, ctx) {
+    const cache = caches.default;
+    let response = await cache.match(request);
+    if (response) { return response; }
+
+    const { searchParams } = new URL(request.url);
+    const postData = searchParams.get('글') || '제목|작성자|0|0|0|내용이 없습니다.';
+    let title, author, views, upvotes, dislikes, content;
+    try {
+      const parts = postData.split('|');
+      title = decodeURIComponent(parts[0] || '').replace(/\//g, ' ');
+      author = decodeURIComponent(parts[1] || '').replace(/\//g, ' ');
+      views = parts[2]; upvotes = parts[3]; dislikes = parts[4];
+      content = decodeURIComponent(parts[5] || '').replace(/\//g, ' ');
+    } catch (e) {
+      [title, author, views, upvotes, dislikes, content] = ['파싱 오류', '시스템', '0', '0', '0', 'URL의 글 파라미터 형식이 올바르지 않습니다.'];
+    }
+
+    const commentsMap = new Map();
+    const rootComments = [];
+    for (const [key, value] of searchParams.entries()) {
+      if (key.startsWith('댓글')) {
+        try {
+          const commentParts = value.split('|');
+          const type = decodeURIComponent(commentParts[0] || '');
+          const comAuthor = decodeURIComponent(commentParts[1] || '').replace(/\//g, ' ');
+          const comContent = decodeURIComponent(commentParts[2] || '').replace(/\//g, ' ');
+          const commentData = { id: key, author: comAuthor, content: comContent, children: [], processedContent: [] };
+          if (type.startsWith('대')) {
+            const parentId = type.substring(1);
+            if (commentsMap.has(parentId)) { commentsMap.get(parentId).children.push(commentData); }
+          } else { rootComments.push(commentData); }
+          commentsMap.set(key, commentData);
+        } catch (e) {}
+      }
+    }
+    
+    const processContent = async (text) => {
+        const processed = [];
+        if (!text) return processed;
+
+        const imgTagRegex = /\{img:(.+?)\}/g;
+        const parts = text.split(imgTagRegex); // 태그를 기준으로 텍스트를 나눔
+
+        for (let i = 0; i < parts.length; i++) {
+            if (i % 2 === 0) { // 짝수 인덱스는 일반 텍스트
+                if (parts[i]) {
+                    parts[i].split('\n').forEach(line => {
+                        if (line) processed.push({ type: 'text', text: line });
+                    });
+                }
+            } else { // 홀수 인덱스는 이미지 키워드
+                const keyword = parts[i];
+                const imageUrl = IMAGE_KEYWORDS[keyword];
+
+                if (imageUrl) { // 키워드가 존재하면
+                    const dataUri = await getImageDataUri(imageUrl);
+                    if (dataUri) {
+                        processed.push({ type: 'image', uri: dataUri });
+                    }
+                } else { // 키워드가 없으면
+                    processed.push({ type: 'text', text: `{img:${keyword}}` });
+                }
+            }
+        }
+        return processed;
+    };
+    
+    const processedContent = await processContent(content);
+    const processCommentsRecursive = async (comments) => {
+        for (const comment of comments) {
+            comment.processedContent = await processContent(comment.content);
+            await processCommentsRecursive(comment.children);
+        }
+    };
+    await processCommentsRecursive(rootComments);
+
+    const IMAGE_HEIGHT = 200;
+    const IMAGE_MARGIN_BOTTOM = 10;
+
+    const calculateProcessedHeight = (processedItems, maxWidth, fontSize, lineHeight) => {
+        let height = 0;
+        processedItems.forEach(item => {
+            if (item.type === 'image') { height += IMAGE_HEIGHT + IMAGE_MARGIN_BOTTOM; }
+            else { height += wrapText(item.text, maxWidth, fontSize).length * lineHeight; }
+        });
+        return height;
+    };
+
+    const calculateCommentsHeight = (comments, depth) => {
+        let height = 0;
+        for (const comment of comments) {
+            height += 30;
+            const maxWidth = 740 - (depth * 30);
+            height += calculateProcessedHeight(comment.processedContent, maxWidth, 14, 22);
+            height += 8;
+            height += calculateCommentsHeight(comment.children, depth + 1);
+        }
+        return height;
+    };
+
+    let dynamicHeight = calculateProcessedHeight(processedContent, 740, 15, 25);
+    if (rootComments.length > 0) {
+        dynamicHeight += 60;
+        dynamicHeight += calculateCommentsHeight(rootComments, 0);
+    }
+    const imageHeight = 120 + dynamicHeight + 80;
+
+    const netUpvotes = (parseInt(upvotes) || 0) - (parseInt(dislikes) || 0);
+    const theme = { bg: '#ffffff', border: '#e3e3e3', headerBlue: '#5c6bc0', headerText: '#ffffff', metaText: '#eeeeee', contentText: '#333', buttonBg: '#f8f8f8', buttonText: '#555', star: '#ffc107', commentHeader: '#666' };
+    
+    let svg = `<svg width="780" height="${imageHeight}" xmlns="http://www.w3.org/2000/svg"><style>.font { font-family: 'Malgun Gothic', '맑은 고딕', 'Apple SD Gothic Neo', sans-serif; } .title { font-size: 20px; font-weight: 500; } .meta { font-size: 13px; } .content { font-size: 15px; fill: ${theme.contentText}; } .comment-author { font-size: 14px; font-weight: bold; fill: #111; } .comment-content { font-size: 14px; fill: #333; } .button-text { font-size: 14px; fill: ${theme.buttonText}; text-anchor: middle; }</style><rect width="100%" height="100%" fill="${theme.bg}" /><rect width="100%" height="100" fill="${theme.headerBlue}" /><g transform="translate(20, 0)">`;
+    let titleX = 0;
+    if (netUpvotes >= 20) {
+        svg += `<text x="${titleX}" y="45" fill="${theme.star}" style="font-size:20px; font-weight:bold;">★</text>`; titleX += 25;
+    }
+    svg += `<text x="${titleX}" y="45" class="font title" fill="${theme.headerText}">${escapeHtml(title)}</text>`;
+    svg += `<text y="75" class="font meta" fill="${theme.metaText}"><tspan style="font-weight:500; fill:${theme.headerText};">${escapeHtml(author)}</tspan><tspan dx="15">조회 ${views || 0}</tspan><tspan dx="10">추천 ${netUpvotes}</tspan></text></g>`;
+    
+    let currentY = 130;
+
+    svg += `<g transform="translate(20, 0)">`;
+    for (const item of processedContent) {
+        if (item.type === 'image') {
+            svg += `<image href="${item.uri}" x="0" y="${currentY}" height="${IMAGE_HEIGHT}" width="740" preserveAspectRatio="xMidYMid meet" />`;
+            currentY += IMAGE_HEIGHT + IMAGE_MARGIN_BOTTOM;
+        } else {
+            const wrappedLines = wrapText(item.text, 740, 15);
+            for (const line of wrappedLines) {
+                svg += `<text y="${currentY}" class="font content">${escapeHtml(line)}</text>`;
+                currentY += 25;
+            }
+        }
+    }
+    svg += `</g>`;

@@ -1,0 +1,42 @@
+ // 의미없는 주석이에요
+    const renderCommentsRecursive = (comments, depth) => {
+        let subSvg = '';
+        for (const comment of comments) {
+            const xOffset = depth * 30;
+            subSvg += `<g transform="translate(${20 + xOffset}, ${currentY})">`;
+            if (depth > 0) { subSvg += `<text x="-18" y="0" style="font-size:16px; fill:#888;">↳</text>`; }
+            subSvg += `<text class="font comment-author">${escapeHtml(comment.author)}</text></g>`;
+            currentY += 22;
+            for (const item of comment.processedContent) {
+                if (item.type === 'image') {
+                    subSvg += `<image href="${item.uri}" x="${20 + xOffset}" y="${currentY}" height="${IMAGE_HEIGHT}" width="${740 - xOffset}" preserveAspectRatio="xMidYMid meet" />`;
+                    currentY += IMAGE_HEIGHT + IMAGE_MARGIN_BOTTOM;
+                } else {
+                    const maxWidth = 740 - xOffset;
+                    const wrappedLines = wrapText(item.text, maxWidth, 14);
+                    for (const line of wrappedLines) {
+                        subSvg += `<text x="${20 + xOffset}" y="${currentY}" class="font comment-content">${escapeHtml(line)}</text>`;
+                        currentY += 22;
+                    }
+                }
+            }
+            currentY += 8;
+            subSvg += renderCommentsRecursive(comment.children, depth + 1);
+        }
+        return subSvg;
+    };
+    
+    if (rootComments.length > 0) {
+      currentY += 20;
+      svg += `<g transform="translate(20, ${currentY})"><line x1="0" y1="-20" x2="740" y2="-20" stroke="${theme.border}" /><text y="5" style="font-size:15px; font-weight:bold; fill:${theme.commentHeader};">댓글 ${commentsMap.size}개</text></g>`;
+      currentY += 40;
+      svg += renderCommentsRecursive(rootComments, 0);
+    }
+
+    svg += `<g transform="translate(0, ${imageHeight - 70})"><line x1="0" y1="0" x2="780" y2="0" stroke="${theme.border}" /><g transform="translate(260, 20)"><rect width="120" height="35" rx="5" ry="5" fill="${theme.buttonBg}" stroke="${theme.border}" /><text x="60" y="23" class="font button-text">[추천! ${upvotes || 0}]</text></g><g transform="translate(400, 20)"><rect width="120" height="35" rx="5" ry="5" fill="${theme.buttonBg}" stroke="${theme.border}" /><text x="60" y="23" class="font button-text">[비추천! ${dislikes || 0}]</text></g></g></svg>`;
+
+    response = new Response(svg, { headers: { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=3600' }});
+    ctx.waitUntil(cache.put(request, response.clone()));
+    return response;
+  },
+};
